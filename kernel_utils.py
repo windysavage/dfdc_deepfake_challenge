@@ -1,4 +1,6 @@
 import os
+import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -7,8 +9,10 @@ from PIL import Image
 from albumentations.augmentations.functional import image_compression
 from facenet_pytorch.models.mtcnn import MTCNN
 from concurrent.futures import ThreadPoolExecutor
-
 from torchvision.transforms import Normalize
+
+from preprocessing.utils import landmark_alignment
+from preprocessing.retinaface.detect import FaceDetector
 
 mean = [0.485, 0.456, 0.406]
 std = [0.229, 0.224, 0.225]
@@ -63,6 +67,32 @@ class VideoReader:
         result = self._read_frames_at_indices(path, capture, frame_idxs)
         capture.release()
         return result
+
+    def read_webcam_frames(self, path, num_frames):
+        assert num_frames > 0
+        frames = []
+        capture = cv2.VideoCapture(0)
+
+        Path("webcam_outputs/frames").mkdir(exist_ok=True)
+        for i in range(num_frames):
+            ret, frame = capture.read()
+            frames.append(frame)
+            # cv2.imshow(f'webcam_outputs/frames/{i}.png', frame)
+
+            # if len(frame_list) >= 32:
+            #     frame_list = sorted(
+            #         list(Path("webcam_outputs/frames").glob("**/*.png")), key=lambda x: x.stem)
+            #     frame_list[0].unlink()
+            #     cv2.imwrite(
+            #         f'webcam_outputs/frames/{datetime.datetime.now()}.png', frame)
+            # else:
+            #     cv2.imwrite(
+            #         f'webcam_outputs/frames/{datetime.datetime.now()}.png', frame)
+
+        frames = np.stack(arrays=frames, axis=0)
+        capture.release()
+
+        return frames, list(range(num_frames))
 
     def read_random_frames(self, path, num_frames, seed=None):
         """Picks the frame indices at random.
@@ -206,22 +236,31 @@ class VideoReader:
 
 
 class FaceExtractor:
-    def __init__(self, video_read_fn):
+    def __init__(self, video_read_fn, mode, detector_type):
+        self.mode = mode
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.video_read_fn = video_read_fn
-        self.detector = MTCNN(margin=0, thresholds=[
-                              0.7, 0.8, 0.8], device=device)
+
+        if detector_type == "MTCNN":
+            self.detector = MTCNN(margin=0, thresholds=[
+                0.7, 0.8, 0.8], device=device)
+        if detector_type == "retinaface":
+            self.detector = FaceDetector(
+                network="mobile0.25", weights="./weights/retinaface/mobilenet0.25_Final.pth")
 
     def process_videos(self, input_dir, filenames, video_idxs):
         videos_read = []
         frames_read = []
         frames = []
         results = []
+
         for video_idx in video_idxs:
             # Read the full-size frames from this video.
             filename = filenames[video_idx]
             video_path = os.path.join(input_dir, filename)
+
             result = self.video_read_fn(video_path)
+
             # Error? Then skip this video.
             if result is None:
                 continue
@@ -233,19 +272,35 @@ class FaceExtractor:
 
             frames.append(my_frames)
             frames_read.append(my_idxs)
+            # Path("webcam_outputs/crops").mkdir(exist_ok=True)
             for i, frame in enumerate(my_frames):
                 h, w = frame.shape[:2]
                 img = Image.fromarray(frame.astype(np.uint8))
                 img = img.resize(size=[s // 2 for s in img.size])
 
-                batch_boxes, probs = self.detector.detect(img, landmarks=False)
+                # MTCNN
+                # batch_boxes, probs = self.detector.detect(img, landmarks=False)
+
+                img_array = np.array(img)
+                # img_array = landmark_alignment(img_array, None)
+
+                annotations, drawed_img = self.detector.detect(
+                    np.array(img, dtype=np.float32), landmarks=True)
+
+                batch_boxes = annotations["bbox"]
+                batch_boxes = [np.reshape(np.array(box, dtype=np.float32), (4, ))
+                               for box in batch_boxes]
 
                 faces = []
                 scores = []
-                if batch_boxes is None:
+                if batch_boxes is None or len(batch_boxes) == 0:
                     continue
-                for bbox, score in zip(batch_boxes, probs):
+                for bbox in batch_boxes:
                     if bbox is not None:
+                        # MTCNN
+                        # xmin, ymin, xmax, ymax = [int(b * 2) for b in bbox]
+
+                        # face recognition
                         xmin, ymin, xmax, ymax = [int(b * 2) for b in bbox]
                         w = xmax - xmin
                         h = ymax - ymin
@@ -253,8 +308,10 @@ class FaceExtractor:
                         p_w = w // 3
                         crop = frame[max(ymin - p_h, 0):ymax +
                                      p_h, max(xmin - p_w, 0):xmax + p_w]
+
+                        # cv2.imwrite(f"webcam_outputs/crops/{i}.jpg", crop)
                         faces.append(crop)
-                        scores.append(score)
+                        # scores.append(score)
 
                 frame_dict = {"video_idx": video_idx,
                               "frame_idx": my_idxs[i],
@@ -264,19 +321,21 @@ class FaceExtractor:
                               "scores": scores}
                 results.append(frame_dict)
 
-        return results
+        return results, drawed_img
 
     def process_video(self, video_path):
         """Convenience method for doing face extraction on a single video."""
         input_dir = os.path.dirname(video_path)
         filenames = [os.path.basename(video_path)]
-        return self.process_videos(input_dir, filenames, [0])
+        results, drawed_img = self.process_videos(input_dir, filenames, [0])
+        return results, drawed_img
 
 
 def confident_strategy(pred, t=0.8):
     pred = np.array(pred)
     sz = len(pred)
     fakes = np.count_nonzero(pred > t)
+
     # 11 frames are detected as fakes with high probability
     if fakes > sz // 2.5 and fakes > 11:
         return np.mean(pred[pred > t])
@@ -319,44 +378,48 @@ def isotropically_resize_image(img, size, interpolation_down=cv2.INTER_AREA, int
 def predict_on_video(face_extractor, video_path, batch_size, input_size, models, strategy=np.mean,
                      apply_compression=False):
     batch_size *= 4
-    try:
-        faces = face_extractor.process_video(video_path)
-        if len(faces) > 0:
-            x = np.zeros((batch_size, input_size, input_size, 3),
-                         dtype=np.uint8)
-            n = 0
-            for frame_data in faces:
-                for face in frame_data["faces"]:
-                    resized_face = isotropically_resize_image(face, input_size)
-                    resized_face = put_to_center(resized_face, input_size)
-                    if apply_compression:
-                        resized_face = image_compression(
-                            resized_face, quality=90, image_type=".jpg")
-                    if n + 1 < batch_size:
-                        x[n] = resized_face
-                        n += 1
-                    else:
-                        pass
-            if n > 0:
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                x = torch.tensor(x, device=device).float()
-                # Preprocess the images.
-                x = x.permute((0, 3, 1, 2))
-                for i in range(len(x)):
-                    x[i] = normalize_transform(x[i] / 255.)
-                # Make a prediction, then take the average.
-                with torch.no_grad():
-                    preds = []
-                    for model in models:
-                        y_pred = model(x[:n].half())
-                        y_pred = torch.sigmoid(y_pred.squeeze())
-                        bpred = y_pred[:n].cpu().numpy()
-                        preds.append(strategy(bpred))
-                    return np.mean(preds)
-    except Exception as e:
-        print("Prediction error on video %s: %s" % (video_path, str(e)))
 
-    return 0.5
+    # try:
+    faces, drawed_img = face_extractor.process_video(video_path)
+    print(f"faces: {len(faces)}")
+    if len(faces) > 0:
+        x = np.zeros((batch_size, input_size, input_size, 3),
+                     dtype=np.uint8)
+        n = 0
+        for frame_data in faces:
+            for face in frame_data["faces"]:
+                resized_face = isotropically_resize_image(face, input_size)
+                resized_face = put_to_center(resized_face, input_size)
+                if apply_compression:
+                    resized_face = image_compression(
+                        resized_face, quality=90, image_type=".jpg")
+                if n + 1 < batch_size:
+                    x[n] = resized_face
+                    n += 1
+                else:
+                    pass
+        if n > 0:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            x = torch.tensor(x, device=device).float()
+            # Preprocess the images.
+            x = x.permute((0, 3, 1, 2))
+            for i in range(len(x)):
+                x[i] = normalize_transform(x[i] / 255.)
+            # Make a prediction, then take the average.
+            with torch.no_grad():
+                preds = []
+                for model in models:
+                    y_pred = model(x[:n])
+                    y_pred = torch.sigmoid(y_pred.squeeze())
+                    # bpred = y_pred[:n].cpu().numpy()
+                    # preds.append(strategy(bpred))
+                # return np.mean(preds), faces[0]
+                return [y_pred.item()], drawed_img
+
+    # except Exception as e:
+    #     print("Prediction error on video %s: %s" % (video_path, str(e)))
+
+    return [0.5], drawed_img
 
 
 def predict_on_video_set(face_extractor, videos, input_size, num_workers, test_dir, frames_per_video, models,
@@ -364,12 +427,12 @@ def predict_on_video_set(face_extractor, videos, input_size, num_workers, test_d
                          apply_compression=False):
     def process_file(i):
         filename = videos[i]
-        y_pred = predict_on_video(face_extractor=face_extractor, video_path=os.path.join(test_dir, filename),
-                                  input_size=input_size,
-                                  batch_size=frames_per_video,
-                                  models=models, strategy=strategy, apply_compression=apply_compression)
-        return y_pred
+        y_pred, drawed_img = predict_on_video(face_extractor=face_extractor, video_path=os.path.join(test_dir, filename),
+                                              input_size=input_size,
+                                              batch_size=frames_per_video,
+                                              models=models, strategy=strategy, apply_compression=apply_compression)
+        return y_pred, drawed_img
 
-    with ThreadPoolExecutor(max_workers=num_workers) as ex:
-        predictions = ex.map(process_file, range(len(videos)))
-    return list(predictions)
+    predictions, drawed_img = process_file(0)
+    # print(predictions)
+    return list(predictions), drawed_img

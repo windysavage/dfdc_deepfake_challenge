@@ -284,13 +284,15 @@ class FaceExtractor:
                 img_array = np.array(img)
                 # img_array = landmark_alignment(img_array, None)
 
-                annotations, drawed_img = self.detector.detect(
+                _, drawed_img, aligned = self.detector.detect(
                     np.array(img, dtype=np.float32), landmarks=True)
+                frame = aligned
+                annotations, _, _ = self.detector.detect(
+                    np.array(frame, dtype=np.float32), landmarks=True)
 
                 batch_boxes = annotations["bbox"]
                 batch_boxes = [np.reshape(np.array(box, dtype=np.float32), (4, ))
                                for box in batch_boxes]
-
                 faces = []
                 scores = []
                 if batch_boxes is None or len(batch_boxes) == 0:

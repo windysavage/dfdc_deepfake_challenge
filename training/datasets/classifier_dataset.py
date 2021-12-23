@@ -1,5 +1,6 @@
 import math
 import os
+
 from preprocessing.utils import landmark_alignment
 import random
 import sys
@@ -301,8 +302,6 @@ class DeepFakeClassifierDataset(Dataset):
 
                 if random.random() < 1.0:
                     image = remove_landmark(image, annotations["landmark"])
-                    cv2.imwrite("remove.jpg", image)
-                    exit()
                 elif random.random() < 0.2:
                     blackout_convex_hull(image)
                 elif random.random() < 0.1:
@@ -335,6 +334,7 @@ class DeepFakeClassifierDataset(Dataset):
             valid_label = 1 if valid_label else 0
             rotation = 0
             if self.transforms:
+                image = np.array(image, dtype=np.uint8)
                 data = self.transforms(image=image, mask=mask)
                 image = data["image"]
                 mask = data["mask"]

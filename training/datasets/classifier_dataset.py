@@ -19,7 +19,7 @@ import dlib
 
 
 from training.datasets.validation_set import PUBLIC_SET
-from preprocessing.utils import landmark_alignment
+from preprocessing.retinaface.detect import FaceDetector
 
 
 def prepare_bit_masks(mask):
@@ -94,7 +94,8 @@ def dist(p1, p2):
 
 def remove_eyes(image, landmarks):
     image = image.copy()
-    (x1, y1), (x2, y2) = landmarks[:2]
+    x1, y1, x2, y2 = landmarks[:4]
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
     mask = np.zeros_like(image[..., 0])
     line = cv2.line(mask, (x1, y1), (x2, y2), color=(1), thickness=2)
     w = dist((x1, y1), (x2, y2))
@@ -106,12 +107,13 @@ def remove_eyes(image, landmarks):
 
 def remove_nose(image, landmarks):
     image = image.copy()
-    (x1, y1), (x2, y2) = landmarks[:2]
-    x3, y3 = landmarks[2]
+    x1, y1, x2, y2 = landmarks[:4]
+    x_center, y_center = (x1 + x2) / 2, (y1 + y2) / 2
+    x3, y3 = landmarks[4:6]
+    x_center, y_center, x3, y3 = int(x_center), int(y_center), int(x3), int(y3)
     mask = np.zeros_like(image[..., 0])
-    x4 = int((x1 + x2) / 2)
-    y4 = int((y1 + y2) / 2)
-    line = cv2.line(mask, (x3, y3), (x4, y4), color=(1), thickness=2)
+    line = cv2.line(mask, (x3, y3), (x_center, y_center),
+                    color=(1), thickness=2)
     w = dist((x1, y1), (x2, y2))
     dilation = int(w // 4)
     line = binary_dilation(line, iterations=dilation)
@@ -121,7 +123,9 @@ def remove_nose(image, landmarks):
 
 def remove_mouth(image, landmarks):
     image = image.copy()
-    (x1, y1), (x2, y2) = landmarks[-2:]
+
+    x1, y1, x2, y2 = landmarks[6:]
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
     mask = np.zeros_like(image[..., 0])
     line = cv2.line(mask, (x1, y1), (x2, y2), color=(1), thickness=2)
     w = dist((x1, y1), (x2, y2))
@@ -133,11 +137,15 @@ def remove_mouth(image, landmarks):
 
 def remove_landmark(image, landmarks):
     if random.random() > 0.5:
-        image = remove_eyes(image, landmarks)
+        image = remove_eyes(image, landmarks[0])
+        cv2.imwrite("rm_eyes.jpg", image)
     elif random.random() > 0.5:
-        image = remove_mouth(image, landmarks)
+        image = remove_mouth(image, landmarks[0])
+        cv2.imwrite("rm_month.jpg", image)
     elif random.random() > 0.5:
-        image = remove_nose(image, landmarks)
+        image = remove_nose(image, landmarks[0])
+        cv2.imwrite("rm_nose.jpg", image)
+
     return image
 
 
@@ -256,97 +264,105 @@ class DeepFakeClassifierDataset(Dataset):
         self.reduce_val = reduce_val
 
     def __getitem__(self, index: int):
-
+        detector = FaceDetector(
+            network="mobile0.25", weights="./weights/retinaface/mobilenet0.25_Final.pth")
         while True:
             video, img_file, label, ori_video, frame, fold = self.data[index]
+
+            if self.mode == "train":
+                label = np.clip(label, self.label_smoothing,
+                                1 - self.label_smoothing)
+            img_path = os.path.join(
+                self.data_root, self.crops_dir, video, img_file)
+            image = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+            diff_path = os.path.join(
+                self.data_root, "diffs", video, img_file[:-4] + "_diff.png")
             try:
-                if self.mode == "train":
-                    label = np.clip(label, self.label_smoothing,
-                                    1 - self.label_smoothing)
-                img_path = os.path.join(
-                    self.data_root, self.crops_dir, video, img_file)
-                image = cv2.imread(img_path, cv2.IMREAD_COLOR)
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                mask = np.zeros(image.shape[:2], dtype=np.uint8)
-                diff_path = os.path.join(
-                    self.data_root, "diffs", video, img_file[:-4] + "_diff.png")
-                try:
-                    msk = cv2.imread(diff_path, cv2.IMREAD_GRAYSCALE)
-                    if msk is not None:
-                        mask = msk
-                except:
-                    print("not found mask", diff_path)
-                    pass
-                if self.mode == "train" and self.hardcore and not self.rotation:
-                    # cv2.imwrite("before.jpg", image)
-                    landmark_path = os.path.join(
-                        self.data_root, "landmarks", ori_video, img_file[:-4] + ".npy")
-                    image = landmark_alignment(
-                        image=image, landmark_path=landmark_path)
+                msk = cv2.imread(diff_path, cv2.IMREAD_GRAYSCALE)
+                if msk is not None:
+                    mask = msk
+            except:
+                print("not found mask", diff_path)
+                pass
+            if self.mode == "train" and self.hardcore and not self.rotation:
+                # landmark alignment
+                _, _, aligned = detector.detect(
+                    np.array(image, dtype=np.float32), landmarks=True)
 
-                    if os.path.exists(landmark_path) and random.random() < 0.7:
-                        landmarks = np.load(landmark_path)
-                        image = remove_landmark(image, landmarks)
-                    elif random.random() < 0.2:
-                        blackout_convex_hull(image)
-                    elif random.random() < 0.1:
-                        binary_mask = mask > 0.4 * 255
-                        masks = prepare_bit_masks(
-                            (binary_mask * 1).astype(np.uint8))
-                        tries = 6
-                        current_try = 1
-                        while current_try < tries:
-                            bitmap_msk = random.choice(masks)
-                            if label < 0.5 or np.count_nonzero(mask * bitmap_msk) > 20:
-                                mask *= bitmap_msk
-                                image *= np.expand_dims(bitmap_msk, axis=-1)
-                                break
-                            current_try += 1
+                image = aligned
 
-                    # cv2.imwrite("before.jpg", image)
-                    # print(image.shape)
-                    # image = landmark_alignment(
-                    #     image=image, landmark_path=landmark_path)
-                    # print(image.shape)
+                # get new landmarks after alignment
+                annotations, _, _ = detector.detect(
+                    image, landmarks=True)
 
-                    # cv2.imwrite("after.jpg", image)
-                    # exit()
+                cv2.imwrite("aligned.jpg", image)
 
-                if self.mode == "train" and self.padding_part > 3:
-                    image = change_padding(image, self.padding_part)
-                valid_label = np.count_nonzero(
-                    mask[mask > 20]) > 32 or label < 0.5
-                valid_label = 1 if valid_label else 0
-                rotation = 0
-                if self.transforms:
-                    data = self.transforms(image=image, mask=mask)
-                    image = data["image"]
-                    mask = data["mask"]
-                if self.mode == "train" and self.hardcore and self.rotation:
-                    # landmark_path = os.path.join(self.data_root, "landmarks", ori_video, img_file[:-4] + ".npy")
-                    dropout = 0.8 if label > 0.5 else 0.6
-                    if self.rotation:
-                        dropout *= 0.7
-                    elif random.random() < dropout:
-                        blackout_random(image, mask, label)
+                if random.random() < 1.0:
+                    image = remove_landmark(image, annotations["landmark"])
+                    cv2.imwrite("remove.jpg", image)
+                    exit()
+                elif random.random() < 0.2:
+                    blackout_convex_hull(image)
+                elif random.random() < 0.1:
+                    binary_mask = mask > 0.4 * 255
+                    masks = prepare_bit_masks(
+                        (binary_mask * 1).astype(np.uint8))
+                    tries = 6
+                    current_try = 1
+                    while current_try < tries:
+                        bitmap_msk = random.choice(masks)
+                        if label < 0.5 or np.count_nonzero(mask * bitmap_msk) > 20:
+                            mask *= bitmap_msk
+                            image *= np.expand_dims(bitmap_msk, axis=-1)
+                            break
+                        current_try += 1
 
-                #
-                # os.makedirs("../images", exist_ok=True)
-                # cv2.imwrite(os.path.join("../images", video+ "_" + str(1 if label > 0.5 else 0) + "_"+img_file), image[...,::-1])
+                # cv2.imwrite("before.jpg", image)
+                # print(image.shape)
+                # image = landmark_alignment(
+                #     image=image, landmark_path=landmark_path)
+                # print(image.shape)
 
-                if self.mode == "train" and self.rotation:
-                    rotation = random.randint(0, 3)
-                    image = rot90(image, rotation)
+                # cv2.imwrite("after.jpg", image)
+                # exit()
 
-                image = img_to_tensor(image, self.normalize)
-                return {"image": image, "labels": np.array((label,)), "img_name": os.path.join(video, img_file),
-                        "valid": valid_label, "rotations": rotation}
-            except Exception as e:
-                traceback.print_exc(file=sys.stdout)
+            if self.mode == "train" and self.padding_part > 3:
+                image = change_padding(image, self.padding_part)
+            valid_label = np.count_nonzero(
+                mask[mask > 20]) > 32 or label < 0.5
+            valid_label = 1 if valid_label else 0
+            rotation = 0
+            if self.transforms:
+                data = self.transforms(image=image, mask=mask)
+                image = data["image"]
+                mask = data["mask"]
+            if self.mode == "train" and self.hardcore and self.rotation:
+                # landmark_path = os.path.join(self.data_root, "landmarks", ori_video, img_file[:-4] + ".npy")
+                dropout = 0.8 if label > 0.5 else 0.6
+                if self.rotation:
+                    dropout *= 0.7
+                elif random.random() < dropout:
+                    blackout_random(image, mask, label)
 
-                print("Broken image", os.path.join(
-                    self.data_root, self.crops_dir, video, img_file))
-                index = random.randint(0, len(self.data) - 1)
+            #
+            # os.makedirs("../images", exist_ok=True)
+            # cv2.imwrite(os.path.join("../images", video+ "_" + str(1 if label > 0.5 else 0) + "_"+img_file), image[...,::-1])
+
+            if self.mode == "train" and self.rotation:
+                rotation = random.randint(0, 3)
+                image = rot90(image, rotation)
+
+            image = img_to_tensor(image, self.normalize)
+            return {"image": image, "labels": np.array((label,)), "img_name": os.path.join(video, img_file),
+                    "valid": valid_label, "rotations": rotation}
+            # except Exception as e:
+            #     traceback.print_exc(file=sys.stdout)
+
+            # print("Broken image", os.path.join(
+            #     self.data_root, self.crops_dir, video, img_file))
+            # index = random.randint(0, len(self.data) - 1)
 
     def random_blackout_landmark(self, image, mask, landmarks):
         x, y = random.choice(landmarks)
@@ -389,7 +405,7 @@ class DeepFakeClassifierDataset(Dataset):
             # every 2nd frame, to speed up validation
             rows = rows[rows["frame"] % 20 == 0]
             # another option is to use public validation set
-            #rows = rows[rows["video"].isin(PUBLIC_SET)]
+            # rows = rows[rows["video"].isin(PUBLIC_SET)]
 
         print(
             "real: {}, fakes: {}, mode: {}".format(len(rows[rows["label"] == 0]), len(rows[rows["label"] == 1]), self.mode))
@@ -404,5 +420,6 @@ class DeepFakeClassifierDataset(Dataset):
         fakes = rows[rows["label"] == 1]
         num_real = real["video"].count()
         if self.mode == "train":
-            fakes = fakes.sample(n=num_real, replace=False, random_state=seed)
+            fakes = fakes.sample(n=num_real, replace=False,
+                                 random_state=seed)
         return pd.concat([real, fakes])

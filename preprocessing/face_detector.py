@@ -10,6 +10,7 @@ import os
 import numpy as np
 from retinaface.pre_trained_models import get_model
 import time
+from preprocessing.retinaface.detect import FaceDetector
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -46,17 +47,14 @@ class FacenetDetector(VideoFaceDetector):
             self.detector = face_recognition
 
         if detector == "retinaface":
-            self.detector = get_model("resnet50_2020-07-20", max_size=2048)
-            self.detector.eval()
+            self.detector = FaceDetector(
+                network="mobile0.25", weights="./weights/retinaface/mobilenet0.25_Final.pth")
 
     def _detect_faces(self, frames) -> List:
         batch_boxes = None
         if self.detector_type == "MTCNN":
-            frames = frames[:1]
-            start = time.time()
             batch_boxes, *_ = self.detector.detect(frames, landmarks=False)
-            print(f"time usage of a frame: {time.time()-start}s")
-            exit()
+
         if self.detector_type == "face_recognition":
             results = []
             for frame in frames:
@@ -68,13 +66,21 @@ class FacenetDetector(VideoFaceDetector):
 
         if self.detector_type == "retinaface":
             results = []
+
             for frame in frames:
                 start = time.time()
-                batch_box = self.detector.predict_jsons(np.array(frame))[0][
-                    "bbox"]
-                results.append(batch_box)
-                print(f"time usage of a frame: {time.time()-start}s")
-            batch_boxes = np.stack(results, axis=0)
+                annotations, _, _ = self.detector.detect(
+                    np.array(frame, dtype=np.float32), landmarks=True)
+                batch_box = annotations["bbox"]
+                results.append(np.array(batch_box))
+            try:
+                # batch_boxes = np.stack(results, axis=0)
+                batch_boxes = np.array(results)
+                print(batch_boxes.shape)
+            except Exception as e:
+                print(e)
+                [print(result.shape) for result in results]
+                exit()
 
         return [b.tolist() if b is not None else None for b in batch_boxes]
 

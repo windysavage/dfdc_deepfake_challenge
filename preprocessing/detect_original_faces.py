@@ -20,7 +20,7 @@ def parse_args():
         description="Process a original videos with face detector")
     parser.add_argument("--root-dir", help="root directory")
     parser.add_argument(
-        "--detector", help="choose a detector", default="MTCNN")
+        "--detector", help="choose a detector", default="retinaface")
     parser.add_argument("--detector-type", help="type of the detector", default="FacenetDetector",
                         choices=["FacenetDetector"])
     args = parser.parse_args()

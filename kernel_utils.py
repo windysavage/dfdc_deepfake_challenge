@@ -1,5 +1,6 @@
 import os
 import datetime
+import time
 from pathlib import Path
 
 import cv2
@@ -283,14 +284,18 @@ class FaceExtractor:
 
                 img_array = np.array(img)
                 # img_array = landmark_alignment(img_array, None)
-
-                annotations, drawed_img = self.detector.detect(
+                detect_start = time.time()
+                _, drawed_img, aligned = self.detector.detect(
                     np.array(img, dtype=np.float32), landmarks=True)
-
+                frame = aligned
+                annotations, _, _ = self.detector.detect(
+                    np.array(frame, dtype=np.float32), landmarks=True)
+                cv2.imwrite("to_predict.jpg", frame)
+                print(
+                    f"Time usage of detecting: {time.time() - detect_start}s")
                 batch_boxes = annotations["bbox"]
                 batch_boxes = [np.reshape(np.array(box, dtype=np.float32), (4, ))
                                for box in batch_boxes]
-
                 faces = []
                 scores = []
                 if batch_boxes is None or len(batch_boxes) == 0:
@@ -381,7 +386,7 @@ def predict_on_video(face_extractor, video_path, batch_size, input_size, models,
 
     # try:
     faces, drawed_img = face_extractor.process_video(video_path)
-    print(f"faces: {len(faces)}")
+
     if len(faces) > 0:
         x = np.zeros((batch_size, input_size, input_size, 3),
                      dtype=np.uint8)
@@ -408,12 +413,16 @@ def predict_on_video(face_extractor, video_path, batch_size, input_size, models,
             # Make a prediction, then take the average.
             with torch.no_grad():
                 preds = []
+                predict_start = time.time()
                 for model in models:
                     y_pred = model(x[:n])
                     y_pred = torch.sigmoid(y_pred.squeeze())
                     # bpred = y_pred[:n].cpu().numpy()
                     # preds.append(strategy(bpred))
                 # return np.mean(preds), faces[0]
+                print(
+                    f"time usage of predicting: {time.time() - predict_start}s")
+
                 return [y_pred.item()], drawed_img
 
     # except Exception as e:

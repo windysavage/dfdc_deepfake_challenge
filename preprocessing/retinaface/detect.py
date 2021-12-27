@@ -2,7 +2,7 @@ from __future__ import print_function
 import os
 import time
 import argparse
-
+import copy
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
@@ -42,22 +42,22 @@ def check_keys(model, pretrained_state_dict):
     used_pretrained_keys = model_keys & ckpt_keys
     unused_pretrained_keys = ckpt_keys - model_keys
     missing_keys = model_keys - ckpt_keys
-    print('Missing keys:{}'.format(len(missing_keys)))
-    print('Unused checkpoint keys:{}'.format(len(unused_pretrained_keys)))
-    print('Used keys:{}'.format(len(used_pretrained_keys)))
+    # print('Missing keys:{}'.format(len(missing_keys)))
+    # print('Unused checkpoint keys:{}'.format(len(unused_pretrained_keys)))
+    # print('Used keys:{}'.format(len(used_pretrained_keys)))
     assert len(used_pretrained_keys) > 0, 'load NONE from pretrained checkpoint'
     return True
 
 
 def remove_prefix(state_dict, prefix):
     ''' Old style model is stored with all names of parameters sharing common prefix 'module.' '''
-    print('remove prefix \'{}\''.format(prefix))
+    # print('remove prefix \'{}\''.format(prefix))
     def f(x): return x.split(prefix, 1)[-1] if x.startswith(prefix) else x
     return {f(key): value for key, value in state_dict.items()}
 
 
 def load_model(model, pretrained_path, load_to_cpu):
-    print('Loading pretrained model from {}'.format(pretrained_path))
+    # print('Loading pretrained model from {}'.format(pretrained_path))
     if load_to_cpu:
         pretrained_dict = torch.load(
             pretrained_path, map_location=lambda storage, loc: storage)
@@ -128,7 +128,7 @@ class FaceDetector():
 
         tic = time.time()
         loc, conf, landms = self.net(img)  # forward pass
-        print('net forward time: {:.4f}'.format(time.time() - tic))
+        # print('net forward time: {:.4f}'.format(time.time() - tic))
 
         priorbox = PriorBox(self.cfg, image_size=(im_height, im_width))
         priors = priorbox.forward()
@@ -181,46 +181,76 @@ class FaceDetector():
             out_bboxs.append(det[:-1])
             out_confids.append(det[-1])
             out_landms.append(landms[i])
+
         results = {"bbox": out_bboxs,
-                   "landmark": landms, "confid": out_confids}
+                   "landmark": out_landms, "confid": out_confids}
 
         dets = np.concatenate((dets, landms), axis=1)
-        drawed = self.draw(dets, img_raw)
 
-        return results, drawed
+        img_to_draw = copy.copy(img_raw)
+        img_to_align = copy.copy(img_raw)
 
-    def draw(self, dets, img_raw):
+        drawed = self.draw(dets, img_to_draw)
+        aligned = self.align(results, img_to_align)
+
+        return results, drawed, aligned
+
+    def draw(self, dets, img):
         for b in dets:
             if b[4] < self.vis_thres:
                 continue
             text = "{:.4f}".format(b[4])
             b = list(map(int, b))
-            cv2.rectangle(img_raw, (b[0], b[1]),
+            cv2.rectangle(img, (b[0], b[1]),
                           (b[2], b[3]), (0, 0, 255), 2)
             cx = b[0]
             cy = b[1] + 12
-            cv2.putText(img_raw, text, (cx, cy),
+            cv2.putText(img, text, (cx, cy),
                         cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
 
             # landms
-            cv2.circle(img_raw, (b[5], b[6]), 1, (0, 0, 255), 4)
-            cv2.circle(img_raw, (b[7], b[8]), 1, (0, 255, 255), 4)
-            cv2.circle(img_raw, (b[9], b[10]), 1, (255, 0, 255), 4)
-            cv2.circle(img_raw, (b[11], b[12]), 1, (0, 255, 0), 4)
-            cv2.circle(img_raw, (b[13], b[14]), 1, (255, 0, 0), 4)
+            cv2.circle(img, (b[5], b[6]), 1, (0, 0, 255), 4)
+            cv2.circle(img, (b[7], b[8]), 1, (0, 255, 255), 4)
+            cv2.circle(img, (b[9], b[10]), 1, (255, 0, 255), 4)
+            cv2.circle(img, (b[11], b[12]), 1, (0, 255, 0), 4)
+            cv2.circle(img, (b[13], b[14]), 1, (255, 0, 0), 4)
 
-        # save image
-        # name = "test.jpg"
-        # cv2.imwrite(name, img_raw)
-        img_raw = np.asarray(img_raw, dtype=np.uint8)
-        return img_raw
+        img = np.asarray(img, dtype=np.uint8)
+        return img
 
-# if __name__ == '__main__':
-#     # testing begin
-#     image_path = "./curve/after.jpg"
-#     img_raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    def align(self, results, img):
+        landms = results.get("landmark", None)
+        if landms is None:
+            return img
 
-#     img = np.float32(img_raw)
+        output = None
+        for landm in landms:
+            landm = list(map(int, landm))
+            left_eye = (landm[0], landm[1])
+            right_eye = (landm[2], landm[3])
+            dy = right_eye[1] - left_eye[1]
+            dx = right_eye[0] - left_eye[0]
+            angle = np.degrees(np.arctan2(dy, dx))
 
-    # show image
-    # if args.save_image:
+            desiredLeftEye = (0.35, 0.35)
+            desiredFaceWidth = desiredFaceHeight = 256
+
+            desiredRightEyeX = 1.0 - desiredLeftEye[0]
+            dist = np.sqrt((dx ** 2) + (dy ** 2))
+            desiredDist = (desiredRightEyeX - desiredLeftEye[0])
+            desiredDist *= desiredFaceWidth
+            scale = desiredDist / dist
+
+            center_eye = ((left_eye[0] + right_eye[0]) //
+                          2, (left_eye[1] + right_eye[1]) // 2)
+            M = cv2.getRotationMatrix2D(center_eye, angle, 1.0)
+            tX = desiredFaceWidth * 0.5
+            tY = desiredFaceHeight * desiredLeftEye[1]
+            M[0, 2] += (tX - center_eye[0])
+            M[1, 2] += (tY - center_eye[1])
+
+            (w, h) = (desiredFaceWidth, desiredFaceHeight)
+            output = cv2.warpAffine(
+                img, M, (w, h), flags=cv2.INTER_CUBIC)
+
+        return output if output is not None else img

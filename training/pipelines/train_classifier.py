@@ -235,8 +235,8 @@ def main():
             for p in model.module.encoder.parameters():
                 p.requires_grad = False
         else:
-            model.encoder.train()
-            for p in model.encoder.parameters():
+            model.train()
+            for p in model.parameters():
                 p.requires_grad = True
 
         train_data_loader = DataLoader(data_train, batch_size=batch_size, num_workers=args.workers,
@@ -383,7 +383,8 @@ def train_epoch(current_epoch, loss_functions, model, optimizer, scheduler, trai
                 ohem, fake_loss.size(0)), sorted=False)[0].mean()
             real_loss = topk(real_loss, k=min(
                 ohem, real_loss.size(0)), sorted=False)[0].mean()
-
+        print(f"fake_loss.requires_grad: {fake_loss.requires_grad}")
+        print(f"real_loss.requires_grad: {real_loss.requires_grad}")
         loss = (fake_loss + real_loss) / 2
         losses.update(loss.item(), imgs.size(0))
         fake_losses.update(
@@ -399,6 +400,8 @@ def train_epoch(current_epoch, loss_functions, model, optimizer, scheduler, trai
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
+            print(f"loss require grad: {loss.requires_grad}")
+            exit()
             loss.backward()
         torch.nn.utils.clip_grad_norm_(optimizer, 1)
         optimizer.step()

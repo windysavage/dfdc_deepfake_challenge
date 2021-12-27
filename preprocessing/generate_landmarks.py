@@ -8,6 +8,7 @@ import argparse
 import os
 from functools import partial
 from multiprocessing.pool import Pool
+from preprocessing.retinaface.detect import FaceDetector
 
 
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -19,7 +20,9 @@ cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
 
-detector = MTCNN(margin=0, thresholds=[0.65, 0.75, 0.75], device="cpu")
+# detector = MTCNN(margin=0, thresholds=[0.65, 0.75, 0.75], device="cpu")
+detector = FaceDetector(
+    network="mobile0.25", weights="./weights/retinaface/mobilenet0.25_Final.pth")
 
 
 def save_landmarks(ori_id, root_dir):
@@ -41,8 +44,9 @@ def save_landmarks(ori_id, root_dir):
                     image_ori = cv2.imread(
                         ori_path, cv2.IMREAD_COLOR)[..., ::-1]
                     frame_img = Image.fromarray(image_ori)
-                    batch_boxes, conf, landmarks = detector.detect(
-                        frame_img, landmarks=True)
+                    annotations, _, _ = detector.detect(
+                        np.array(frame_img, dtype=np.float32), landmarks=True)
+                    landmarks = annotations["landmark"]
                     if landmarks is not None:
                         landmarks = np.around(landmarks[0]).astype(np.int16)
                         np.save(landmark_path, landmarks)

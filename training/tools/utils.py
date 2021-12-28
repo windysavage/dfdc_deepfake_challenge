@@ -49,27 +49,29 @@ def create_optimizer(optimizer_config, model, master_params=None):
     scheduler : LRScheduler
         The learning rate scheduler.
     """
-    if optimizer_config.get("classifier_lr", -1) != -1:
-        # Separate classifier parameters from all others
-        net_params = []
-        classifier_params = []
-        for k, v in model.named_parameters():
-            if not v.requires_grad:
-                continue
-            if k.find("encoder") != -1:
-                net_params.append(v)
-            else:
-                classifier_params.append(v)
-        params = [
-            {"params": net_params},
-            {"params": classifier_params,
-                "lr": optimizer_config["classifier_lr"]},
-        ]
-    else:
-        if master_params:
-            params = master_params
-        else:
-            params = model.parameters()
+    # if optimizer_config.get("classifier_lr", -1) != -1:
+    #     # Separate classifier parameters from all others
+    #     net_params = []
+    #     classifier_params = []
+    #     for k, v in model.named_parameters():
+    #         if not v.requires_grad:
+    #             continue
+    #         if k.find("encoder") != -1:
+    #             net_params.append(v)
+    #         else:
+    #             classifier_params.append(v)
+    #     params = [
+    #         {"params": net_params},
+    #         {"params": classifier_params,
+    #             "lr": optimizer_config["classifier_lr"]},
+    #     ]
+    # else:
+    #     if master_params:
+    #         params = master_params
+    #     else:
+    #         params = model.parameters()
+
+    params = model.parameters()
 
     if optimizer_config["type"] == "SGD":
         optimizer = optim.SGD(params,

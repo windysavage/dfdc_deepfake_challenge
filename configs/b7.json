@@ -32,7 +32,5 @@
             0.225
         ]
     },
-    "losses": {
-        "BinaryCrossentropy": 1
-    }
+    "loss": "BinaryCrossentropy"
 }

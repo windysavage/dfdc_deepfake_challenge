@@ -25,4 +25,5 @@ class BinaryCrossentropy(BCEWithLogitsLoss):
 class FocalLoss(BinaryFocalLoss):
     def __init__(self, alpha=None, gamma=3, ignore_index=None, reduction="mean", normalized=False,
                  reduced_threshold=None):
-        super().__init__(alpha, gamma, ignore_index, reduction, normalized, reduced_threshold)
+        super().__init__(alpha, gamma, ignore_index,
+                         reduction, normalized, reduced_threshold)

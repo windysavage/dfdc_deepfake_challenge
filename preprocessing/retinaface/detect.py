@@ -223,9 +223,15 @@ class FaceDetector():
         if landms is None:
             return img
 
+        # output = self._align_by_eyes(landms, img)
+        output = self._align_by_landmarks(landms, img)
+
+        return output if output is not None else img
+
+    def _align_by_eyes(self, landms, img):
         output = None
         for landm in landms:
-            landm = list(map(int, landm))
+            landm = np.array(list(map(int, landm)), dtype=np.float32)
             left_eye = (landm[0], landm[1])
             right_eye = (landm[2], landm[3])
             dy = right_eye[1] - left_eye[1]
@@ -252,5 +258,49 @@ class FaceDetector():
             (w, h) = (desiredFaceWidth, desiredFaceHeight)
             output = cv2.warpAffine(
                 img, M, (w, h), flags=cv2.INTER_CUBIC)
+
+        return output if output is not None else img
+
+    def _align_by_landmarks(self, landms, img):
+        img = np.array(img, dtype=np.uint8)
+        output = None
+
+        for landm in landms:
+            landm = np.array(list(map(int, landm)), dtype=np.float32)
+            landm = landm.reshape((5, 2))
+            std_landmarks = np.array([
+                [76, 102],
+                [146, 102],
+                [112, 142],
+                [83, 185],
+                [141, 184]
+            ], dtype=np.float32)
+            std_face = np.zeros((256, 256, 3), dtype=np.uint8)
+            for x, y in std_landmarks:
+                cv2.circle(std_face, (int(x), int(y)), 3, (0, 255, 0), -1, 16)
+
+            Q = np.zeros((10, 4))
+            S = std_landmarks.reshape(-1, 1)
+
+            for i in range(5):
+                x, y = landm[i]
+                Q[i*2 + 0] = x, y, 1, 0
+                Q[i*2 + 1] = y, -x, 0, 1
+
+            M = (np.linalg.inv(Q.T @ Q) @ Q.T @ S).squeeze()
+            matrix = np.array([
+                [M[0], M[1], M[2]],
+                [-M[1], M[0], M[3]]
+            ])
+
+            # matrix = cv2.getAffineTransform(landm[:3], std_landmarks[:3])
+            output = cv2.warpAffine(img, matrix, (256, 256))
+
+            for x, y in std_landmarks:
+                cv2.circle(output, (int(x), int(y)), 3, (0, 255, 0), -1, 16)
+
+            cv2.imwrite("aligned.jpg", output)
+            cv2.imwrite("ori.jpg", img)
+            exit()
 
         return output if output is not None else img

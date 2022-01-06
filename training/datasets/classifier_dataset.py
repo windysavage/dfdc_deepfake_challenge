@@ -299,8 +299,7 @@ class DeepFakeClassifierDataset(Dataset):
                     image, landmarks=True)
 
                 cv2.imwrite("aligned.jpg", image)
-
-                if random.random() < 1.0:
+                if random.random() < 0.7:
                     image = remove_landmark(image, annotations["landmark"])
                 elif random.random() < 0.2:
                     blackout_convex_hull(image)
@@ -353,7 +352,7 @@ class DeepFakeClassifierDataset(Dataset):
             if self.mode == "train" and self.rotation:
                 rotation = random.randint(0, 3)
                 image = rot90(image, rotation)
-
+            print(image.shape)
             image = img_to_tensor(image, self.normalize)
             return {"image": image, "labels": np.array((label,)), "img_name": os.path.join(video, img_file),
                     "valid": valid_label, "rotations": rotation}

@@ -1,5 +1,16 @@
 ## DeepFake Detection (DFDC) Solution by @selimsef
 
+## For ctbc users
+- train
+  ~~~bash
+  sh train.sh
+  ~~~
+- predict
+  ~~~bash
+  sh predict.sh
+  ~~~
+
+
 ## Challenge details:
 
 [Kaggle Challenge Page](https://www.kaggle.com/c/deepfake-detection-challenge)

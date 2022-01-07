@@ -299,8 +299,8 @@ class FaceDetector():
             for x, y in std_landmarks:
                 cv2.circle(output, (int(x), int(y)), 3, (0, 255, 0), -1, 16)
 
-            cv2.imwrite("aligned.jpg", output)
-            cv2.imwrite("ori.jpg", img)
-            exit()
+            # cv2.imwrite("aligned.jpg", output)
+            # cv2.imwrite("ori.jpg", img)
+            # exit()
 
         return output if output is not None else img
